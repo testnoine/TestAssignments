@@ -50,11 +50,11 @@ jobs:
           
           # 常にコンパイルが必要な基盤クラス（親クラス）
           BASE_TEST_SOURCES=""
-          if [ -f src/test/java/jUnitTest/PracticeTest.java ]; then
-            BASE_TEST_SOURCES+="src/test/java/jUnitTest/PracticeTest.java "
+          if [ -f jUnitTest/PracticeTest.java ]; then
+            BASE_TEST_SOURCES+="jUnitTest/PracticeTest.java "
           fi
-          if [ -f src/test/java/jUnitTest/StandardInputStream.java ]; then
-            BASE_TEST_SOURCES+="src/test/java/jUnitTest/StandardInputStream.java "
+          if [ -f jUnitTest/StandardInputStream.java ]; then
+            BASE_TEST_SOURCES+="jUnitTest/StandardInputStream.java "
           fi
 
           # ----------------------------------------------------
@@ -85,14 +85,7 @@ jobs:
           TEST_TARGETS=""
           
           for FILE_PATH in $MODIFIED_FILES; do
-              if [[ "$FILE_PATH" == src/main/java/* ]]; then
-                  COMPILE_TARGETS+="$FILE_PATH "
-                  
-                  TEST_FILE_PATH=$(echo "$FILE_PATH" | sed 's/src\/main\/java/src\/test\/java/' | sed 's/\.java/Test\.java/')
-                  if [ -f "$TEST_FILE_PATH" ]; then
-                      TEST_TARGETS+="$TEST_FILE_PATH "
-                  fi
-              elif [[ "$FILE_PATH" == src/test/java/* ]]; then
+              if [[ ! "$FILE_PATH" == /* ]]; then
                   # 基盤クラスはスキップ
                   if [[ ! "$FILE_PATH" =~ jUnitTest/PracticeTest.java$ ]] && [[ ! "$FILE_PATH" =~ jUnitTest/StandardInputStream.java$ ]]; then
                       TEST_TARGETS+="$FILE_PATH "
