@@ -1,0 +1,200 @@
+name: Java JUnit Test (Partial Compile)
+
+on:
+  push:
+    branches: [ "main" ]
+    
+permissions:
+  contents: read
+  checks: write
+  
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # 履歴全体をフェッチし、git diff HEAD^..HEAD を可能にする
+          fetch-depth: 0 
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # 1. JUnitライブラリをダウンロードする
+      - name: Download JUnit Libraries
+        run: |
+          mkdir -p lib
+          # JUnit Jupiter API (5.9.1)
+          curl -L https://repo1.maven.org/maven2/org/junit/jupiter/junit-jupiter-api/5.9.1/junit-jupiter-api-5.9.1.jar -o lib/junit-jupiter-api.jar
+          # JUnit Jupiter Engine (5.9.1)
+          curl -L https://repo1.maven.org/maven2/org/junit/jupiter/junit-jupiter-engine/5.9.1/junit-jupiter-engine-5.9.1.jar -o lib/junit-jupiter-engine.jar
+          # JUnit Platform Console Launcher (1.9.1) ★この行が修正対象です★
+          curl -L https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/1.9.1/junit-platform-console-standalone-1.9.1.jar -o lib/junit-platform-console-standalone.jar
+          # apiguardian-api (コンパイル警告解消用)
+          curl -L https://repo1.maven.org/maven2/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar -o lib/apiguardian-api.jar
+
+      #3.コンパイルとJUnitTest
+      - name: Compile Modified Files and Run Tests (Partial)
+        run: |
+          # ----------------------------------------------------
+          # 1. 変数定義とコンパイル対象準備
+          # ----------------------------------------------------
+          mkdir -p target/classes target/test-classes
+          # クラスパスに全てのJUnit JARを追加
+          CLASSPATH="lib/junit-jupiter-api.jar:lib/apiguardian-api.jar"
+          
+          # 常にコンパイルが必要な基盤クラス（親クラス）
+          BASE_TEST_SOURCES=""
+          if [ -f src/test/java/jUnitTest/PracticeTest.java ]; then
+            BASE_TEST_SOURCES+="src/test/java/jUnitTest/PracticeTest.java "
+          fi
+          if [ -f src/test/java/jUnitTest/StandardInputStream.java ]; then
+            BASE_TEST_SOURCES+="src/test/java/jUnitTest/StandardInputStream.java "
+          fi
+
+          # ----------------------------------------------------
+          # 2. 変更されたファイルを特定
+          # ----------------------------------------------------
+          MODIFIED_FILES=$(git diff --name-only HEAD^..HEAD | grep '\.java$')
+          
+          # 変更されたファイルがない場合はスキップ
+          if [ -z "$MODIFIED_FILES" ]; then
+            echo "No .java files were modified in this push. Skipping test run."
+            mkdir -p test-results
+            exit 0
+          fi
+
+          # ----------------------------------------------------
+          # 3. 基盤クラスを最初にコンパイル
+          # ----------------------------------------------------
+          if [ -n "$BASE_TEST_SOURCES" ]; then
+            echo "Compiling base test classes (PracticeTest and StandardInputStream)..."
+            # メインソースは不要なため、クラスパスには target/classes を含めない
+            javac -d target/test-classes -cp $CLASSPATH $BASE_TEST_SOURCES
+          fi
+          
+          # ----------------------------------------------------
+          # 4. 変更されたファイルのみをコンパイル
+          # ----------------------------------------------------
+          COMPILE_TARGETS=""
+          TEST_TARGETS=""
+          
+          for FILE_PATH in $MODIFIED_FILES; do
+              if [[ "$FILE_PATH" == src/main/java/* ]]; then
+                  COMPILE_TARGETS+="$FILE_PATH "
+                  
+                  TEST_FILE_PATH=$(echo "$FILE_PATH" | sed 's/src\/main\/java/src\/test\/java/' | sed 's/\.java/Test\.java/')
+                  if [ -f "$TEST_FILE_PATH" ]; then
+                      TEST_TARGETS+="$TEST_FILE_PATH "
+                  fi
+              elif [[ "$FILE_PATH" == src/test/java/* ]]; then
+                  # 基盤クラスはスキップ
+                  if [[ ! "$FILE_PATH" =~ jUnitTest/PracticeTest.java$ ]] && [[ ! "$FILE_PATH" =~ jUnitTest/StandardInputStream.java$ ]]; then
+                      TEST_TARGETS+="$FILE_PATH "
+                      
+                      MAIN_FILE_PATH=$(echo "$FILE_PATH" | sed 's/src\/test\/java/src\/main\/java/' | sed 's/Test\.java/\.java/')
+                      if [ -f "$MAIN_FILE_PATH" ]; then
+                          COMPILE_TARGETS+="$MAIN_FILE_PATH "
+                      fi
+                  fi
+              fi
+          done
+          
+          # メインソースのコンパイル
+          if [ -n "$COMPILE_TARGETS" ]; then
+            echo $COMPILE_TARGETS | tr ' ' '\n' | sort -u > main_sources.txt
+            echo "Compiling modified main sources: $(cat main_sources.txt)"
+            javac -d target/classes -cp $CLASSPATH @main_sources.txt
+          fi
+          
+          # テストソースのコンパイル
+          if [ -n "$TEST_TARGETS" ]; then
+            echo $TEST_TARGETS | tr ' ' '\n' | sort -u > test_sources.txt
+            echo "Compiling modified test sources: $(cat test_sources.txt)"
+            # クラスパスに target/classes と、すでにコンパイル済みの target/test-classes を含む
+            javac -d target/test-classes -cp target/classes:target/test-classes:$CLASSPATH @test_sources.txt
+          fi
+
+          # ----------------------------------------------------
+          # 5. テスト実行対象のクラス名リストを作成 (最終修正)
+          # ----------------------------------------------------
+          ALL_TEST_CLASSES=""
+          
+          # 【ロジック1: 変更されたテストクラスの処理】
+          if [ -n "$TEST_TARGETS" ]; then
+              # 改行区切りでループ
+              while IFS= read -r FILE_PATH; do
+                  # ファイルパスの先頭 'src/test/java/' を削除
+                  CLASS_NAME="${FILE_PATH#src/test/java/}"
+                  # ファイルパスの末尾 '.java' を削除
+                  CLASS_NAME="${CLASS_NAME%.java}" # <--- ここで.javaを除去
+                  # スラッシュをピリオドに置換
+                  CLASS_NAME="${CLASS_NAME//\//.}"
+                  ALL_TEST_CLASSES+="$CLASS_NAME "
+              done <<< "$TEST_TARGETS"
+          fi
+          
+          # 【ロジック2: 基盤クラスの処理】
+          if [ -n "$BASE_TEST_SOURCES" ]; then
+              # BASE_TEST_SOURCES はスペース区切りなので、forループを使用
+              for FILE_PATH in $BASE_TEST_SOURCES; do
+                  # ファイルパスの先頭 'src/test/java/' を削除
+                  CLASS_NAME="${FILE_PATH#src/test/java/}"
+                  # ファイルパスの末尾 '.java' を削除
+                  CLASS_NAME="${CLASS_NAME%.java}" # <--- ここで.javaを除去
+                  # スラッシュをピリオドに置換
+                  CLASS_NAME="${CLASS_NAME//\//.}"
+                  ALL_TEST_CLASSES+="$CLASS_NAME "
+              done
+          fi
+          
+          # 最終的なクラス名をカンマ区切りで整形
+          TEST_CLASSES_FINAL=$(echo $ALL_TEST_CLASSES | tr ' ' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
+          
+          # 最終リストに残っている '.java' を除去
+          TEST_CLASSES_FINAL=$(echo "$TEST_CLASSES_FINAL" | sed 's/\.java//g')
+          
+          mkdir -p test-results
+          
+          # 【★クラスパスの再定義：ディレクトリとJARを分離★】
+          # JUnitランナー実行時は、クラスとJARを別々に扱うことが推奨される
+          TEST_DIRS="target/classes:target/test-classes"
+          
+          # オプション名と値の文字列を結合（今回はワイルドカードを使うため、あえて `=` を使わず分離）
+          TEST_SELECTOR="--include-classname $TEST_CLASSES_FINAL"
+          
+          echo "Final Test Classes List: $TEST_CLASSES_FINAL" 
+          echo "Running tests with selector: $TEST_SELECTOR"
+          
+          # 【★最重要修正★】java -cp でテストディレクトリを渡し、JARはワイルドカードで渡す（実行環境のBashに展開させる）
+          # NOTE: この形式では、lib/ のワイルドカード展開はシェルに依存します。
+          #       もしこれが失敗する場合、テストディレクトリにJARをコピーする必要がありますが、
+          #       まずはこの標準的な方法で試します。
+          java -jar lib/junit-platform-console-standalone.jar \
+            --class-path "$TEST_DIRS:lib/*" \
+            --scan-classpath \
+            --reports-dir test-results \
+            --fail-if-no-tests
+            
+      # 4. テスト結果のレポートをArtifactとして保存する
+      - name: Upload Test Results Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-test-reports
+          path: test-results/
+        if: always()
+          
+      # 5. GitHubのチェック画面にテスト結果を表示する
+      - name: Publish Test Results to GitHub Checks
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: JUnit Test Report
+          path: test-results/*.xml
+          reporter: java-junit
+          fail-on-error: true
