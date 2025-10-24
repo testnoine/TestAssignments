@@ -49,6 +49,7 @@ jobs:
           CLASSPATH="lib/junit-jupiter-api.jar:lib/apiguardian-api.jar"
           
           # 常にコンパイルが必要な基盤クラス（親クラス）
+          # ルートフォルダ直下のjUnitTestフォルダ内のファイルを指定
           BASE_TEST_SOURCES=""
           if [ -f jUnitTest/PracticeTest.java ]; then
             BASE_TEST_SOURCES+="jUnitTest/PracticeTest.java "
@@ -60,7 +61,8 @@ jobs:
           # ----------------------------------------------------
           # 2. 変更されたファイルを特定
           # ----------------------------------------------------
-          MODIFIED_FILES=$(git diff --name-only HEAD^..HEAD | grep '\.java$')
+          # ルートフォルダにある全ての.javaファイルを対象とする
+          MODIFIED_FILES=$(git diff --name-only HEAD^..HEAD | grep -E '^\w+\.java$|^[a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+\.java$')
           
           # 変更されたファイルがない場合はスキップ
           if [ -z "$MODIFIED_FILES" ]; then
@@ -70,42 +72,52 @@ jobs:
           fi
 
           # ----------------------------------------------------
-          # 3. 基盤クラスを最初にコンパイル
+          # 3. 基盤クラスを最初にコンパイル (コンパイル先は target/test-classes)
           # ----------------------------------------------------
           if [ -n "$BASE_TEST_SOURCES" ]; then
             echo "Compiling base test classes (PracticeTest and StandardInputStream)..."
-            # メインソースは不要なため、クラスパスには target/classes を含めない
             javac -d target/test-classes -cp $CLASSPATH $BASE_TEST_SOURCES
           fi
           
           # ----------------------------------------------------
           # 4. 変更されたファイルのみをコンパイル
           # ----------------------------------------------------
-          COMPILE_TARGETS=""
-          TEST_TARGETS=""
+          COMPILE_TARGETS="" # 課題ソース（メイン）
+          TEST_TARGETS=""    # テストソース
           
           for FILE_PATH in $MODIFIED_FILES; do
-              if [[ ! "$FILE_PATH" == /* ]]; then
-                  # 基盤クラスはスキップ
+              # ファイル名が 'Test.java' で終わるかどうかでメイン/テストを判定（ルートフォルダ直下を想定）
+              if [[ "$FILE_PATH" =~ Test\.java$ ]]; then
+                  # テストソースとして扱う（基盤クラスはステップ3で処理済みなのでスキップ）
                   if [[ ! "$FILE_PATH" =~ jUnitTest/PracticeTest.java$ ]] && [[ ! "$FILE_PATH" =~ jUnitTest/StandardInputStream.java$ ]]; then
                       TEST_TARGETS+="$FILE_PATH "
                       
-                      MAIN_FILE_PATH=$(echo "$FILE_PATH" | sed 's/src\/test\/java/src\/main\/java/' | sed 's/Test\.java/\.java/')
-                      if [ -f "$MAIN_FILE_PATH" ]; then
-                          COMPILE_TARGETS+="$MAIN_FILE_PATH "
+                      # 対応するメインソースもコンパイル対象に追加
+                      MAIN_FILE_NAME=$(echo "$FILE_PATH" | sed 's/Test\.java/\.java/')
+                      if [ -f "$MAIN_FILE_NAME" ]; then
+                          COMPILE_TARGETS+="$MAIN_FILE_NAME "
                       fi
+                  fi
+              else
+                  # メインソースとして扱う
+                  COMPILE_TARGETS+="$FILE_PATH "
+                  
+                  # 対応するテストソースもコンパイル対象に追加
+                  TEST_FILE_NAME=$(echo "$FILE_PATH" | sed 's/\.java/Test\.java/')
+                  if [ -f "$TEST_FILE_NAME" ]; then
+                      TEST_TARGETS+="$TEST_FILE_NAME "
                   fi
               fi
           done
           
-          # メインソースのコンパイル
+          # メインソースのコンパイル (コンパイル先: target/classes)
           if [ -n "$COMPILE_TARGETS" ]; then
             echo $COMPILE_TARGETS | tr ' ' '\n' | sort -u > main_sources.txt
             echo "Compiling modified main sources: $(cat main_sources.txt)"
             javac -d target/classes -cp $CLASSPATH @main_sources.txt
           fi
           
-          # テストソースのコンパイル
+          # テストソースのコンパイル (コンパイル先: target/test-classes)
           if [ -n "$TEST_TARGETS" ]; then
             echo $TEST_TARGETS | tr ' ' '\n' | sort -u > test_sources.txt
             echo "Compiling modified test sources: $(cat test_sources.txt)"
@@ -114,37 +126,21 @@ jobs:
           fi
 
           # ----------------------------------------------------
-          # 5. テスト実行対象のクラス名リストを作成 (最終修正)
+          # 5. テスト実行対象のクラス名リストを作成 (ルートフォルダ対応)
           # ----------------------------------------------------
           ALL_TEST_CLASSES=""
           
           # 【ロジック1: 変更されたテストクラスの処理】
-          if [ -n "$TEST_TARGETS" ]; then
-              # 改行区切りでループ
-              while IFS= read -r FILE_PATH; do
-                  # ファイルパスの先頭 'src/test/java/' を削除
-                  CLASS_NAME="${FILE_PATH#src/test/java/}"
-                  # ファイルパスの末尾 '.java' を削除
-                  CLASS_NAME="${CLASS_NAME%.java}" # <--- ここで.javaを除去
-                  # スラッシュをピリオドに置換
-                  CLASS_NAME="${CLASS_NAME//\//.}"
-                  ALL_TEST_CLASSES+="$CLASS_NAME "
-              done <<< "$TEST_TARGETS"
-          fi
+          # TEST_TARGETSとBASE_TEST_SOURCESを結合して処理
+          ALL_TARGET_SOURCES="$TEST_TARGETS $BASE_TEST_SOURCES"
           
-          # 【ロジック2: 基盤クラスの処理】
-          if [ -n "$BASE_TEST_SOURCES" ]; then
-              # BASE_TEST_SOURCES はスペース区切りなので、forループを使用
-              for FILE_PATH in $BASE_TEST_SOURCES; do
-                  # ファイルパスの先頭 'src/test/java/' を削除
-                  CLASS_NAME="${FILE_PATH#src/test/java/}"
-                  # ファイルパスの末尾 '.java' を削除
-                  CLASS_NAME="${CLASS_NAME%.java}" # <--- ここで.javaを除去
-                  # スラッシュをピリオドに置換
-                  CLASS_NAME="${CLASS_NAME//\//.}"
-                  ALL_TEST_CLASSES+="$CLASS_NAME "
-              done
-          fi
+          for FILE_PATH in $ALL_TARGET_SOURCES; do
+              # パス区切り (/) をピリオド (.) に置換
+              CLASS_NAME="${FILE_PATH//\//.}"
+              # ファイルパスの末尾 '.java' を削除
+              CLASS_NAME="${CLASS_NAME%.java}"
+              ALL_TEST_CLASSES+="$CLASS_NAME "
+          done
           
           # 最終的なクラス名をカンマ区切りで整形
           TEST_CLASSES_FINAL=$(echo $ALL_TEST_CLASSES | tr ' ' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
